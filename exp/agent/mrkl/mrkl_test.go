@@ -58,4 +58,9 @@ func TestOneShotZeroAgent(t *testing.T) {
 		t.Errorf("Expected to get Paris. Got %s", result)
 	}
 
+	if !ok {
+		t.Error("No value in return values answer field")
+		return
+	}
+
 }
