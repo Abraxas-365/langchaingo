@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +13,15 @@ import (
 
 type FunctionInfo struct {
 	FunctionBody *ast.FuncDecl
+	FunctionText string
+	GptResume    string
 	CalledFuncs  []*ast.FuncDecl
 }
 
 var functionMap map[string]FunctionInfo
 var functionNameMap map[string]*ast.FuncDecl
 
+// collectRelatedNodes returns a list of function call expressions found in the given node.
 func collectRelatedNodes(pkg *packages.Package, node ast.Node) []*ast.CallExpr {
 	var relatedNodes []*ast.CallExpr
 
@@ -32,13 +36,16 @@ func collectRelatedNodes(pkg *packages.Package, node ast.Node) []*ast.CallExpr {
 	return relatedNodes
 }
 
-func processPackage(pkg *packages.Package) {
+// populateFunctionMaps processes the package's AST to find all function declarations,
+// populates the functionMap and functionNameMap, and links the called functions.
+func populateFunctionMaps(pkg *packages.Package) {
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(node ast.Node) bool {
 			fn, ok := node.(*ast.FuncDecl)
 			if ok {
 				functionKey := fmt.Sprintf("%s:%s", pkg.Fset.Position(fn.Pos()).Filename, fn.Name.Name)
 
+				//Traer las funciones que son llamadas desde esa funcion
 				relatedNodes := collectRelatedNodes(pkg, fn)
 				calledFuncs := make([]*ast.FuncDecl, 0, len(relatedNodes))
 
@@ -59,8 +66,16 @@ func processPackage(pkg *packages.Package) {
 					}
 				}
 
+				var fnBody strings.Builder
+				if err := format.Node(&fnBody, pkg.Fset, fn); err != nil {
+					panic(err)
+				}
+
+
+
 				functionMap[functionKey] = FunctionInfo{
 					FunctionBody: fn,
+					FunctionText: fnBody.String(),
 					CalledFuncs:  calledFuncs,
 				}
 
@@ -71,6 +86,31 @@ func processPackage(pkg *packages.Package) {
 	}
 }
 
+// processGoFile processes a single Go file and populates functionMap and functionNameMap.
+func processGoFile(path string) error {
+	dir := filepath.Dir(path)
+
+	cfg := &packages.Config{
+		Mode:  packages.LoadAllSyntax,
+		Tests: false,
+		Dir:   dir,
+	}
+
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		return err
+	}
+
+	if len(pkgs) != 1 {
+		return fmt.Errorf("expected a single package, but got %d packages", len(pkgs))
+	}
+
+	pkg := pkgs[0]
+	populateFunctionMaps(pkg)
+
+	return nil
+}
+
 func main() {
 	targetDir := "./test"
 	functionMap = make(map[string]FunctionInfo)
@@ -78,31 +118,14 @@ func main() {
 
 	err := filepath.Walk(targetDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
 			return err
 		}
 		if !info.IsDir() && strings.HasSuffix(path, ".go") {
-			dir := filepath.Dir(path)
-
-			cfg := &packages.Config{
-				Mode:  packages.LoadAllSyntax,
-				Tests: false,
-				Dir:   dir,
-			}
-
-			pkgs, err := packages.Load(cfg, ".")
+			err := processGoFile(path)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 				return err
 			}
-
-			if len(pkgs) != 1 {
-				fmt.Printf("Expected a single package, but got %d packages\n", len(pkgs))
-				return nil
-			}
-
-			pkg := pkgs[0]
-			processPackage(pkg)
 		}
 		return nil
 	})
@@ -114,7 +137,7 @@ func main() {
 	// Print the function map
 	for key, value := range functionMap {
 		fmt.Printf("Key: %s\n", key)
-		ast.Print(nil, value.FunctionBody)
+		fmt.Println(value.FunctionText)
 		fmt.Printf("Called Functions:\n")
 		for _, calledFunc := range value.CalledFuncs {
 			fmt.Printf("\t%s\n", calledFunc.Name.Name)
